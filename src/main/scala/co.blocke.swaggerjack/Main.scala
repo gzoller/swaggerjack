@@ -3,15 +3,17 @@ package co.blocke.swaggerjack
 import sttp.tapir.Schema
 
 // A tiny recursive model to exercise the hard case
-case class Node(value: Int, next: Option[Node])
+final case class Example(
+                          coords: (Int, String, java.util.UUID)
+                        )
 
 @main def runSwaggerJackDemo(): Unit =
   // Explicit API
-  val schema1: Schema[Node] = SwaggerJack.schemaOf[Node]
+  val schema1: Schema[Example] = SwaggerJack.schemaOf[Example]
 
   // Auto-derivation API
   import co.blocke.swaggerjack.auto.given
-  val schema2: Schema[Node] = summon[Schema[Node]]
+  val schema2: Schema[Example] = summon[Schema[Example]]
 
   println("Explicit schema:")
   println(schema1)

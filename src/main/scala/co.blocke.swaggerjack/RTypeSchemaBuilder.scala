@@ -5,467 +5,412 @@ import co.blocke.scala_reflection.Clazzes.*
 import co.blocke.scala_reflection.rtypes.*
 
 import sttp.tapir.SchemaType.*
-import sttp.tapir.{Validator, FieldName, Schema, SchemaType}
-
+import sttp.tapir.{FieldName, Schema, SchemaType, Validator}
 
 object RTypeSchemaBuilder:
 
+  // Cache by stable id (rt.name is okay if stable/fully-qualified)
+  final case class BuildContext(seen: Map[String, BuiltSchema] = Map.empty):
+    def get(id: String): Option[BuiltSchema] = seen.get(id)
+    def put(id: String, schema: BuiltSchema): BuildContext = copy(seen = seen + (id -> schema))
+
+  private val ApiDocFqn = "co.blocke.swaggerjack.ApiDoc"
+
+  // returns (description, exampleStringFromAnnotations)
+  private def extractApiDocRaw(fInfo: FieldInfo): (Option[String], Option[String]) =
+    fInfo.annotations
+      .get(ApiDocFqn)
+      .map { m =>
+        (
+          m.get("description").filter(_.nonEmpty),
+          m.get("example").filter(_.nonEmpty)
+        )
+      }
+      .getOrElse((None, None))
+
+  // decode what scala-reflection stored (a stringified Scala expression) into an actual example value
+  private def decodeExample(raw: String, fieldRt: RType[?]): Option[Any] =
+    // strip any "example = " prefix if your metadata includes that
+    val s0 = raw.trim.stripPrefix("example = ").trim
+
+    // ApiExample.None
+    if (s0.endsWith("ApiExample.None") || s0.endsWith("ApiExample.None$")) return None
+
+    // ApiExample.Simple.apply("...")
+    val SimplePrefix = "co.blocke.swaggerjack.ApiExample.Simple.apply(\""
+    if (s0.startsWith(SimplePrefix) && s0.endsWith("\")")) {
+      val inner = s0.substring(SimplePrefix.length, s0.length - 2)
+
+      // coerce some obvious primitive-like strings into real types for Swagger examples
+      fieldRt match
+        case _: PrimitiveRType if fieldRt.name == BOOLEAN_CLASS || fieldRt.name == JBOOLEAN_CLASS =>
+          inner.toLowerCase match
+            case "true" => Some(true)
+            case "false" => Some(false)
+            case _ => Some(inner)
+
+        case _: UUIDRType =>
+          Some(inner) // swagger expects uuid example as string
+
+        case _: InstantRType | _: LocalDateRType | _: LocalDateTimeRType | _: OffsetDateTimeRType | _: ZonedDateTimeRType =>
+          Some(inner) // date/time examples are strings
+
+        case _ =>
+          // numbers: try coercion if the field is numeric
+          fieldRt.name match
+            case INT_CLASS | JINTEGER_CLASS | LONG_CLASS | JLONG_CLASS | SHORT_CLASS | JSHORT_CLASS | BYTE_CLASS | JBYTE_CLASS =>
+              inner.toLongOption.orElse(inner.toIntOption).map(_.asInstanceOf[Any]).orElse(Some(inner))
+            case DOUBLE_CLASS | JDOUBLE_CLASS | FLOAT_CLASS | JFLOAT_CLASS | BIG_DECIMAL_CLASS | JBIG_DECIMAL_CLASS =>
+              inner.toDoubleOption.map(_.asInstanceOf[Any]).orElse(Some(inner))
+            case _ =>
+              Some(inner)
+    }
+
+    // ApiExample.Value.apply[...]...  -> we *cannot* recover the object instance from a string.
+    // IMPORTANT: return None so we fall back to ExampleBuilder.exampleOf(fieldRt)
+    if (s0.contains("co.blocke.swaggerjack.ApiExample.Value.apply")) None
+    else None
+
+
+  // ----------------------------
+  // public entry
+  // ----------------------------
   def schemaFor[T](rt: RType[T]): Schema[T] =
-    schemaForAny(rt, BuildContext()).asInstanceOf[Schema[T]]
+    toTapirSchema[T](buildSchema(rt, BuildContext()))
 
-
-  final case class BuildContext(
-                                 seen: Map[String, Schema[?]] = Map.empty
-                               ):
-    def get(id: String): Option[Schema[?]] = seen.get(id)
-    def put(id: String, schema: Schema[?]): BuildContext =
-      copy(seen = seen + (id -> schema))
-
+  // ----------------------------
+  // primitives
+  // ----------------------------
   private val primitiveSchemaTypes: Map[String, SchemaType[?]] =
     Map(
-      // ----- Booleans -----
-      BOOLEAN_CLASS -> SchemaType.SBoolean(),
-      JBOOLEAN_CLASS -> SchemaType.SBoolean(),
+      BOOLEAN_CLASS     -> SchemaType.SBoolean(),
+      JBOOLEAN_CLASS    -> SchemaType.SBoolean(),
 
-      // ----- Integers -----
-      BYTE_CLASS -> SchemaType.SInteger(),
-      SHORT_CLASS -> SchemaType.SInteger(),
-      INT_CLASS -> SchemaType.SInteger(),
-      LONG_CLASS -> SchemaType.SInteger(),
+      BYTE_CLASS        -> SchemaType.SInteger(),
+      SHORT_CLASS       -> SchemaType.SInteger(),
+      INT_CLASS         -> SchemaType.SInteger(),
+      LONG_CLASS        -> SchemaType.SInteger(),
+      JBYTE_CLASS       -> SchemaType.SInteger(),
+      JSHORT_CLASS      -> SchemaType.SInteger(),
+      JINTEGER_CLASS    -> SchemaType.SInteger(),
+      JLONG_CLASS       -> SchemaType.SInteger(),
 
-      JBYTE_CLASS -> SchemaType.SInteger(),
-      JSHORT_CLASS -> SchemaType.SInteger(),
-      JINTEGER_CLASS -> SchemaType.SInteger(),
-      JLONG_CLASS -> SchemaType.SInteger(),
-
-      // ----- Floating / decimal -----
-      FLOAT_CLASS -> SchemaType.SNumber(),
-      DOUBLE_CLASS -> SchemaType.SNumber(),
+      FLOAT_CLASS       -> SchemaType.SNumber(),
+      DOUBLE_CLASS      -> SchemaType.SNumber(),
       BIG_DECIMAL_CLASS -> SchemaType.SNumber(),
-      BIG_INT_CLASS -> SchemaType.SInteger(),
+      BIG_INT_CLASS     -> SchemaType.SInteger(),
+      JFLOAT_CLASS      -> SchemaType.SNumber(),
+      JDOUBLE_CLASS     -> SchemaType.SNumber(),
+      JBIG_DECIMAL_CLASS-> SchemaType.SNumber(),
+      JBIG_INTEGER_CLASS-> SchemaType.SInteger(),
+      JNUMBER_CLASS     -> SchemaType.SNumber(),
 
-      JFLOAT_CLASS -> SchemaType.SNumber(),
-      JDOUBLE_CLASS -> SchemaType.SNumber(),
-      JBIG_DECIMAL_CLASS -> SchemaType.SNumber(),
-      JBIG_INTEGER_CLASS -> SchemaType.SInteger(),
-      JNUMBER_CLASS -> SchemaType.SNumber(),
+      STRING_CLASS      -> SchemaType.SString(),
+      CHAR_CLASS        -> SchemaType.SString(),
+      JCHARACTER_CLASS  -> SchemaType.SString(),
 
-      // ----- Strings / chars -----
-      STRING_CLASS -> SchemaType.SString(),
-      CHAR_CLASS -> SchemaType.SString(),
-      JCHARACTER_CLASS -> SchemaType.SString(),
-
-      // ----- Catch-alls -----
-      ANY_CLASS -> SchemaType.SString(),
-      ANYVAL_CLASS -> SchemaType.SString()
+      ANY_CLASS         -> SchemaType.SString(),
+      ANYVAL_CLASS      -> SchemaType.SString()
     )
 
-  private def schemaForAny(
-                            rt: RType[?],
-                            ctx: BuildContext
-                          ): Schema[?] = {
+  // ----------------------------
+  // BuiltSchema -> Tapir Schema
+  // ----------------------------
+  private def toTapirSchema[T](bs: BuiltSchema): Schema[T] =
+    Schema[T](
+      schemaType     = bs.schemaType.asInstanceOf[SchemaType[T]],
+      isOptional     = bs.isOptional,
+      description    = bs.description,
+      format         = bs.format,
+      validator      = bs.validator.asInstanceOf[Validator[T]],
+      encodedExample = bs.example
+    ).copy(
+      name = bs.name.map(n => Schema.SName(n, Nil))
+    )
 
-    val id = rt.name  // or stable id
+  // ----------------------------
+  // core builder
+  // ----------------------------
+  private def buildSchema(rt: RType[?], ctx: BuildContext): BuiltSchema =
+    val id = rt.name
 
     ctx.get(id) match
-      case Some(existing) =>
-        // Reuse the schema instance directly
-        existing
-
+      case Some(existing) => existing
       case None =>
-        rt match {
+        rt match
 
+          // ---------- primitives ----------
           case p: PrimitiveRType =>
             val st =
               primitiveSchemaTypes.getOrElse(
                 p.name,
-                throw new UnsupportedOperationException(
-                  s"Unsupported primitive type: ${p.name}"
-                )
+                throw new UnsupportedOperationException(s"Unsupported primitive type: ${p.name}")
               )
-
-            Schema(
-              schemaType = st,
-              isOptional = p.isNullable
+            BuiltSchema(
+              schemaType  = st,
+              isOptional  = p.isNullable
             )
 
+          // ---------- class/product ----------
           case c: ClassRType[_] =>
-            val id = c.name
+            val typeName = c.name
 
-            // placeholder to break recursion
-            val placeholder: Schema[Any] =
-              Schema(schemaType = SchemaType.SProduct[Any](Nil))
+            // placeholder to break recursion; IMPORTANT: give it a name too
+            val placeholder =
+              BuiltSchema(
+                schemaType = SchemaType.SProduct[Any](Nil),
+                name       = Some(typeName)
+              )
 
-            val ctx2 = ctx.put(id, placeholder)
+            val ctx2 = ctx.put(typeName, placeholder)
 
             val fields: List[SchemaType.SProductField[Any]] =
               c.fields.map { fInfo =>
-                val doc = fInfo.annotations.get("co.blocke.swaggerjack.ApiDoc")
+                val base = buildSchema(fInfo.fieldType, ctx2)
 
-                val description = doc.flatMap(_.get("description"))
-                val example = doc.flatMap(_.get("example")).filter(_.nonEmpty)
-                val raw: Schema[?] = schemaForAny(fInfo.fieldType, ctx2)
+                val (docDesc, docExampleRaw) = extractApiDocRaw(fInfo)
 
-                raw match
-                  case s: Schema[f] =>
-                    SchemaType.SProductField[Any, f](
-                      FieldName(fInfo.name),
-                      s.copy(
-                        description = description,
-                        encodedExample = example
-                      ),
-                      (_: Any) => None.asInstanceOf[Option[f]]
-                    )
+                val decodedFromAnno: Option[Any] =
+                  docExampleRaw.flatMap(ex => decodeExample(ex, fInfo.fieldType))
+
+                // If annotation was ApiExample.Value(...) we can’t reify it, so we fall back to ExampleBuilder.
+                val finalExample: Option[Any] =
+                  decodedFromAnno
+                    .orElse(base.example)
+                    .orElse(ExampleBuilder.exampleOf(fInfo.fieldType))
+
+                val enriched =
+                  base.copy(
+                    description = docDesc.orElse(base.description),
+                    example = finalExample
+                  )
+
+                SchemaType.SProductField[Any, Any](
+                  FieldName(fInfo.name),
+                  toTapirSchema[Any](enriched),
+                  _ => None
+                )
               }
 
-            val completed: Schema[Any] =
+            val completed =
               placeholder.copy(
                 schemaType = SchemaType.SProduct[Any](fields)
               )
 
-            ctx2.put(id, completed)
+            ctx2.put(typeName, completed)
             completed
 
+          // ---------- option ----------
           case o: OptionRType[_] =>
-            val s = schemaForAny(o.optionParamType, ctx)
-            s.copy(isOptional = true)
+            buildSchema(o.optionParamType, ctx).copy(isOptional = true)
 
+          // ---------- alias ----------
           case a: AliasRType[_] =>
-            schemaForAny(a.unwrappedType, ctx)
+            buildSchema(a.unwrappedType, ctx)
 
+          // ---------- arrays/sequences/sets ----------
           case a: ArrayRType[_] =>
-            val elemSchema = schemaForAny(a.elementType, ctx)
-
-            Schema(
-              SchemaType.SArray[Any, Any](elemSchema.asInstanceOf[Schema[Any]])(
-                (_: Any) => Iterable.empty
-              )
+            val elem = buildSchema(a.elementType, ctx)
+            BuiltSchema(
+              schemaType =
+                SchemaType.SArray[Any, Any](
+                  element = toTapirSchema[Any](elem)
+                )(_ => Iterable.empty),
+              name = None
             )
-
-          case e: EitherRType[_] =>
-            val leftSchema  = schemaForAny(e.leftType, ctx)
-            val rightSchema = schemaForAny(e.rightType, ctx)
-
-            Schema(
-              SchemaType.SCoproduct[Any](
-                List(leftSchema, rightSchema),
-                None
-              )(
-                (_: Any) => None
-              )
-            )
-
-          case e: EnumRType[_] =>
-            Schema[String](
-              schemaType = SchemaType.SString(),
-              validator  = Validator.enumeration(e.values)
-            )
-
-          case m: JavaMapRType[_] =>
-            val valueSchema = schemaForAny(m.elementType2, ctx)
-
-            Schema(
-              SchemaType.SOpenProduct[Any, Any](
-                fields = Nil,
-                valueSchema = valueSchema.asInstanceOf[Schema[Any]]
-              )(
-                (_: Any) => Map.empty[String, Any]
-              )
-            )
-
-          case m: MapRType[_] =>
-            val valueSchema = schemaForAny(m.elementType2, ctx)
-
-            Schema(
-              SchemaType.SOpenProduct[Any, Any](
-                fields = Nil,
-                valueSchema = valueSchema.asInstanceOf[Schema[Any]]
-              )(
-                (_: Any) => Map.empty[String, Any]
-              )
-            )
-
-          case _: NeoTypeRType[_] =>
-            Schema(
-              SchemaType.SString()
-            )
-
-          case _: UUIDRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("uuid"),
-              description = Some("UUID")
-            )
-
-          case _: URIRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("uri"),
-              description = Some("URI")
-            )
-
-          case _: URLRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("url"),
-              description = Some("URL")
-            )
-
-          case s: SelfRefRType[_] =>
-            ctx.get(s.name).getOrElse {
-              throw new IllegalStateException(
-                s"Unresolved self reference for type: ${s.name}"
-              )
-            }
 
           case s: SeqRType[_] =>
-            val elemSchema = schemaForAny(s.elementType, ctx)
-
-            Schema[Any](
-              schemaType = SchemaType.SArray[Any, Any](
-                element = elemSchema.asInstanceOf[Schema[Any]]
-              )(
-                (_: Any) => Iterable.empty[Any]
-              )
+            val elem = buildSchema(s.elementType, ctx)
+            BuiltSchema(
+              schemaType =
+                SchemaType.SArray[Any, Any](
+                  element = toTapirSchema[Any](elem)
+                )(_ => Iterable.empty)
             )
 
           case s: SetRType[_] =>
-            val elemSchema = schemaForAny(s.elementType, ctx)
-
-            Schema[Any](
-              schemaType = SchemaType.SArray[Any, Any](
-                element = elemSchema.asInstanceOf[Schema[Any]]
-              )(
-                (_: Any) => Iterable.empty[Any]
-              )
-            )
-
-          // ---------- java.time ----------
-          case _: DurationRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("duration"),
-              description = Some("ISO-8601 duration")
-            )
-
-          case _: InstantRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("date-time"),
-              description = Some("Instant (UTC)")
-            )
-
-          case _: LocalDateRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("date"),
-              description = Some("Local date (ISO-8601)")
-            )
-
-          case _: LocalDateTimeRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("date-time"),
-              description = Some("Local date-time (no timezone)")
-            )
-
-          case _: LocalTimeRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("time"),
-              description = Some("Local time")
-            )
-
-          case _: MonthDayRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              description = Some("Month-day (e.g. --12-25)")
-            )
-
-          case _: OffsetDateTimeRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("date-time"),
-              description = Some("Date-time with offset")
-            )
-
-          case _: OffsetTimeRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              description = Some("Time with offset")
-            )
-
-          case _: PeriodRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("period"),
-              description = Some("ISO-8601 period")
-            )
-
-          case _: YearRType =>
-            Schema[Int](
-              schemaType  = SchemaType.SInteger(),
-              format      = Some("int32"),
-              description = Some("Year")
-            )
-
-          case _: YearMonthRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              description = Some("Year-month (YYYY-MM)")
-            )
-
-          case _: ZonedDateTimeRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              format      = Some("date-time"),
-              description = Some("Zoned date-time")
-            )
-
-          case _: ZoneIdRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              description = Some("Zone ID (IANA)")
-            )
-
-          case _: ZoneOffsetRType =>
-            Schema[String](
-              schemaType  = SchemaType.SString(),
-              description = Some("Zone offset (+02:00)")
-            )
-
-          // ---------- java.lang ----------
-          case _: JavaObjectRType =>
-            Schema[Any](
-              schemaType  = SchemaType.SString(),
-              description = Some("Unstructured object")
-            )
-
-          case t: TraitRType[_] if !t.isSealed =>
-            throw new IllegalArgumentException(
-              s"Non-sealed trait '${t.name}' cannot be represented in OpenAPI schema"
-            )
-
-          case t: TraitRType[_] =>
-            val id = t.name
-
-            // 1️⃣ placeholder to break recursion
-            val placeholder: Schema[Any] =
-              Schema(schemaType = SchemaType.SCoproduct[Any](Nil, None)(_ => None))
-
-            // 2️⃣ register early
-            val ctx2 = ctx.put(id, placeholder)
-
-            // 3️⃣ fully build children (annotation-safe)
-            val childSchemas: List[Schema[Any]] =
-              t.sealedChildren.map { child =>
-                schemaForAny(child, ctx2).asInstanceOf[Schema[Any]]
-              }
-
-            // 4️⃣ finalize
-            val completed: Schema[Any] =
-              placeholder.copy(
-                schemaType =
-                  SchemaType.SCoproduct[Any](
-                    subtypes = childSchemas,
-                    discriminator = None
-                  )(
-                    (_: Any) => None
-                  )
-              )
-
-            ctx2.put(id, completed)
-            completed
-
-          case t: TryRType[_] =>
-            // Try[T] is modeled as just T at the schema level
-            // (failure is an execution concern, not a data shape concern)
-            schemaForAny(t.tryType, ctx)
-
-          case t: TupleRType[_] =>
-            // Tuples are represented as fixed-position arrays
-            val elemSchemas: List[Schema[Any]] =
-              t.typeParamValues.map { rt =>
-                schemaForAny(rt, ctx).asInstanceOf[Schema[Any]]
-              }
-
-            Schema[Any](
+            val elem = buildSchema(s.elementType, ctx)
+            BuiltSchema(
               schemaType =
                 SchemaType.SArray[Any, Any](
-                  element = Schema[Any](
-                    schemaType = SchemaType.SCoproduct[Any](
-                      subtypes = elemSchemas,
-                      discriminator = None
-                    )(
-                      (_: Any) => None
-                    )
-                  )
-                )(
-                  (_: Any) => Iterable.empty[Any]
-                )
+                  element = toTapirSchema[Any](elem)
+                )(_ => Iterable.empty)
+            )
+
+          // ---------- either/union/coproduct-ish ----------
+          case e: EitherRType[_] =>
+            val left  = buildSchema(e.leftType, ctx)
+            val right = buildSchema(e.rightType, ctx)
+
+            BuiltSchema(
+              schemaType =
+                SchemaType.SCoproduct[Any](
+                  subtypes = List(toTapirSchema[Any](left), toTapirSchema[Any](right)),
+                  discriminator = None
+                )(_ => None)
             )
 
           case u: UnionRType[_] =>
-            val leftSchema  = schemaForAny(u.leftType, ctx).asInstanceOf[Schema[Any]]
-            val rightSchema = schemaForAny(u.rightType, ctx).asInstanceOf[Schema[Any]]
+            val left  = buildSchema(u.leftType, ctx)
+            val right = buildSchema(u.rightType, ctx)
 
-            Schema[Any](
+            BuiltSchema(
               schemaType =
                 SchemaType.SCoproduct[Any](
-                  subtypes = List(leftSchema, rightSchema),
+                  subtypes = List(toTapirSchema[Any](left), toTapirSchema[Any](right)),
                   discriminator = None
-                )(
-                  (_: Any) => None
-                )
+                )(_ => None)
             )
 
-          case _: ObjectRType[_] =>
-            Schema[Any](
-              schemaType = SchemaType.SProduct[Any](Nil)
+          // ---------- enum ----------
+          case e: EnumRType[_] =>
+            BuiltSchema(
+              schemaType = SchemaType.SString(),
+              validator = Validator.enumeration(e.values),
+              description = Some(s"Enum: ${e.values.mkString(", ")}"),
+              example    = e.values.headOption
             )
 
-          case rt =>
+
+          // ---------- scala/java maps ----------
+          case m: MapRType[_] =>
+            val value = buildSchema(m.elementType2, ctx)
+            BuiltSchema(
+              schemaType =
+                SchemaType.SOpenProduct[Any, Any](
+                  fields = Nil,
+                  valueSchema = toTapirSchema[Any](value)
+                )(_ => Map.empty[String, Any])
+            )
+
+          case m: JavaMapRType[_] =>
+            val value = buildSchema(m.elementType2, ctx)
+            BuiltSchema(
+              schemaType =
+                SchemaType.SOpenProduct[Any, Any](
+                  fields = Nil,
+                  valueSchema = toTapirSchema[Any](value)
+                )(_ => Map.empty[String, Any])
+            )
+
+          // ---------- neotype ----------
+          case _: NeoTypeRType[_] =>
+            BuiltSchema(schemaType = SchemaType.SString())
+
+          // ---------- UUID/URL/URI ----------
+          case _: UUIDRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("uuid"), description = Some("UUID"))
+
+          case _: URIRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("uri"), description = Some("URI"))
+
+          case _: URLRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("url"), description = Some("URL"))
+
+          // ---------- recursion ----------
+          case s: SelfRefRType[_] =>
+            ctx.get(s.name).getOrElse {
+              throw new IllegalStateException(s"Unresolved self reference for type: ${s.name}")
+            }
+
+          // ---------- java.time ----------
+          case _: DurationRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("duration"), description = Some("ISO-8601 duration"))
+          case _: InstantRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("date-time"), description = Some("Instant (UTC)"))
+          case _: LocalDateRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("date"), description = Some("Local date (ISO-8601)"))
+          case _: LocalDateTimeRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("date-time"), description = Some("Local date-time (no timezone)"))
+          case _: LocalTimeRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("time"), description = Some("Local time"))
+          case _: MonthDayRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), description = Some("Month-day (e.g. --12-25)"))
+          case _: OffsetDateTimeRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("date-time"), description = Some("Date-time with offset"))
+          case _: OffsetTimeRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), description = Some("Time with offset"))
+          case _: PeriodRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("period"), description = Some("ISO-8601 period"))
+          case _: YearRType =>
+            BuiltSchema(schemaType = SchemaType.SInteger(), format = Some("int32"), description = Some("Year"))
+          case _: YearMonthRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), description = Some("Year-month (YYYY-MM)"))
+          case _: ZonedDateTimeRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), format = Some("date-time"), description = Some("Zoned date-time"))
+          case _: ZoneIdRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), description = Some("Zone ID (IANA)"))
+          case _: ZoneOffsetRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), description = Some("Zone offset (+02:00)"))
+
+          // ---------- java.lang ----------
+          case _: JavaObjectRType =>
+            BuiltSchema(schemaType = SchemaType.SString(), description = Some("Unstructured object"))
+
+          // ---------- sealed trait / coproduct ----------
+          case t: TraitRType[_] =>
+            val typeName = t.name
+
+            val placeholder =
+              BuiltSchema(
+                schemaType = SchemaType.SCoproduct[Any](Nil, None)(_ => None),
+                name       = Some(typeName)
+              )
+
+            val ctx2 = ctx.put(typeName, placeholder)
+
+            val childBuilt: List[BuiltSchema] =
+              t.sealedChildren.map(child => buildSchema(child, ctx2))
+
+            val completed =
+              placeholder.copy(
+                schemaType =
+                  SchemaType.SCoproduct[Any](
+                    subtypes = childBuilt.map(bs => toTapirSchema[Any](bs)),
+                    discriminator = None
+                  )(_ => None)
+              )
+
+            ctx2.put(typeName, completed)
+            completed
+
+          // ---------- try ----------
+          case t: TryRType[_] =>
+            buildSchema(t.tryType, ctx)
+
+          // ---------- tuple (kept as your array-of-coproduct approach) ----------
+          case t: TupleRType[_] =>
+            val elements: List[BuiltSchema] =
+              t.typeParamValues.map(rt => buildSchema(rt, ctx))
+
+            BuiltSchema(
+              schemaType =
+                SchemaType.SArray[Any, Any](
+                  element =
+                    Schema[Any](
+                      schemaType =
+                        SchemaType.SCoproduct[Any](
+                          subtypes = elements.map(e => toTapirSchema[Any](e)),
+                          discriminator = None
+                        )(_ => None)
+                    )
+                )(_ => Iterable.empty[Any])
+            )
+
+          // ---------- singleton objects (your enum-value trick) ----------
+          case o: ObjectRType[_] =>
+            BuiltSchema(
+              schemaType   = SchemaType.SString(),
+              validator    = Validator.enumeration(List(o.name)),
+              description  = Some(s"Singleton value '${o.name}'"),
+              example      = Some(o.name)
+            )
+
+          case other =>
             throw new UnsupportedOperationException(
               s"""
                  |SwaggerJack cannot generate an OpenAPI schema for:
-                 |  RType: ${rt.getClass.getName}
-                 |  Name : ${rt.name}
-                 |
-                 |This type is either:
-                 |  • abstract
-                 |  • higher-kinded
-                 |  • path-dependent
-                 |  • or not representable in OpenAPI
+                 |  RType: ${other.getClass.getName}
+                 |  Name : ${other.name}
                  |""".stripMargin
             )
-        }
-  }
-
-
-/*
-swaggerjack/
-  src/test/scala/
-    schemas/
-      PrimitiveSchemaSpec.scala
-      CollectionSchemaSpec.scala
-      ProductSchemaSpec.scala
-      CoproductSchemaSpec.scala
-      TimeSchemaSpec.scala
-      EdgeCaseSchemaSpec.scala
-  
-def schemaOf[T]: Schema[T] =
-  SwaggerJack.schemaOf[T]
-
-def assertSchema[T](
-  expectedType: SchemaType[_],
-  description: Option[String] = None
-)(using m: scala.reflect.ClassTag[T]): Unit = {
-  val s = schemaOf[T]
-  assert(s.schemaType == expectedType)
-  assert(s.description == description)
-}
-  
-OpenAPIGenerator.fromEndpoints(
-  List(endpoint.out(jsonBody[Journey]))
-)
-*/

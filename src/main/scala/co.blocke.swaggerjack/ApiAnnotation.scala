@@ -4,5 +4,5 @@ import scala.annotation.StaticAnnotation
 
 final case class ApiDoc(
                          description: String,
-                         example: String = ""
+                         example: ApiExample
                        ) extends StaticAnnotation

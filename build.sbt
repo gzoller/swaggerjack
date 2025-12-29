@@ -31,7 +31,7 @@ inThisBuild(
 
 ThisBuild / usePipelining := false
 
-//ThisBuild / version := "1.0.0-SNAPSHOT" // <-- Comment this line out for real releases!
+ThisBuild / version := "1.0.0-SNAPSHOT" // <-- Comment this line out for real releases!
 
 ThisBuild / name := "swaggerjack"
 ThisBuild / moduleName := "swaggerjack_3"
@@ -48,7 +48,7 @@ ThisBuild / githubWorkflowPublishTargetBranches := Seq(
   RefPredicate.Equals(Ref.Branch("main"))
 )
 ThisBuild / mimaFailOnNoPrevious := false
-ThisBuild / tlBaseVersion := "1.1"
+ThisBuild / tlBaseVersion := "1.0"
 
 // Only needed if you use publishing with TypelevelCiReleasePlugin
 ThisBuild / githubWorkflowPublishTargetBranches := Seq(
