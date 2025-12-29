@@ -31,7 +31,7 @@ inThisBuild(
 
 ThisBuild / usePipelining := false
 
-ThisBuild / version := "1.0.0-SNAPSHOT" // <-- Comment this line out for real releases!
+//ThisBuild / version := "1.0.0-SNAPSHOT" // <-- Comment this line out for real releases!
 
 ThisBuild / name := "swaggerjack"
 ThisBuild / moduleName := "swaggerjack_3"
