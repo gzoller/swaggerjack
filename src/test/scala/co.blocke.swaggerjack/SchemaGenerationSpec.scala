@@ -31,11 +31,11 @@ import scala.util.Try
 
 class SchemaGenerationSpec extends FunSuite {
 
-  private def dumpSchema[T](name: String)(schema: => sttp.tapir.Schema[T]): Unit = {
-    val s = schema
-    println(s"\n===== $name =====")
-    println(s)
-  }
+//  private def dumpSchema[T](name: String)(schema: => sttp.tapir.Schema[T]): Unit = {
+//    val s = schema
+//    println(s"\n===== $name =====")
+//    println(s)
+//  }
 
   private inline def schemaOf[T]: Schema[T] =
     SwaggerJack.schemaOf[T]
