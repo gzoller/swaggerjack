@@ -6,22 +6,20 @@ import co.blocke.scala_reflection.rtypes.*
 object ExampleBuilder:
 
   private def constructInstance(
-                                 clazz: Class[?],
-                                 args: Seq[Any]
-                               ): Any =
+      clazz: Class[?],
+      args: Seq[Any]
+  ): Any =
     val ctor = clazz.getConstructors.head
-    ctor.newInstance(args.map(_.asInstanceOf[Object]) *)
-
+    ctor.newInstance(args.map(_.asInstanceOf[Object])*)
 
   def exampleOf(rtype: RType[?]): Option[Any] =
     exampleOf(rtype, seen = Set.empty)
 
   private def exampleOf(
-                         rtype: RType[?],
-                         seen: Set[RType[?]]
-                       ): Option[Any] =
-    if seen.contains(rtype) then
-      None
+      rtype: RType[?],
+      seen: Set[RType[?]]
+  ): Option[Any] =
+    if seen.contains(rtype) then None
     else
       rtype match
 
@@ -49,10 +47,9 @@ object ExampleBuilder:
 
         case m: MapRType[?] =>
           for
-            key   <- exampleOf(m.elementType, seen + rtype)
+            key <- exampleOf(m.elementType, seen + rtype)
             value <- exampleOf(m.elementType2, seen + rtype)
-          yield
-            Map(key -> value)
+          yield Map(key -> value)
 
         // ─────────────────────────────
         // Case classes / records
@@ -68,9 +65,7 @@ object ExampleBuilder:
             Some(
               constructInstance(c.clazz, values)
             )
-          else
-            None
-
+          else None
 
         // ─────────────────────────────
         // Sealed traits → pick first child

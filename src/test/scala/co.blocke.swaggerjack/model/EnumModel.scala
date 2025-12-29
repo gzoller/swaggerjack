@@ -4,5 +4,5 @@ enum Status:
   case Pending, Active, Disabled
 
 case class EnumModel(
-                      status: Status
-                    )
+    status: Status
+)

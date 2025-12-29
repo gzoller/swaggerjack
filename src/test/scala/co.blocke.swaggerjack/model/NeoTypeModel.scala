@@ -10,6 +10,6 @@ object NonEmptyString extends Newtype[String]:
 opaque type Email = String
 
 case class NeoTypeModel(
-                         name: NonEmptyString,
-                         email: Email
-                       )
+    name: NonEmptyString,
+    email: Email
+)

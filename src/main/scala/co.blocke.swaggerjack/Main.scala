@@ -4,8 +4,8 @@ import sttp.tapir.Schema
 
 // A tiny recursive model to exercise the hard case
 final case class Example(
-                          coords: (Int, String, java.util.UUID)
-                        )
+    coords: (Int, String, java.util.UUID)
+)
 
 @main def runSwaggerJackDemo(): Unit =
   // Explicit API
