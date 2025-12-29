@@ -70,10 +70,10 @@ lazy val root = project
     doc := null,
     Compile / doc / sources := Nil,
     libraryDependencies ++= Seq(
-      "co.blocke"                   %% "scala-reflection"    % "2.0.16",
-      "com.softwaremill.sttp.tapir" %% "tapir-core"          % "1.13.3",
-      "org.scalameta"               %% "munit"               % "1.0.0-M9" % Test,
-      "io.github.kitlangton"        %% "neotype"             % "0.3.37" % Test
+      "co.blocke" %% "scala-reflection" % "2.0.16",
+      "com.softwaremill.sttp.tapir" %% "tapir-core" % "1.13.3",
+      "org.scalameta" %% "munit" % "1.0.0-M9" % Test,
+      "io.github.kitlangton" %% "neotype" % "0.3.37" % Test
     )
   )
 
@@ -119,5 +119,3 @@ ThisBuild / githubWorkflowPublish := Seq(
     )
   )
 )
-
-
