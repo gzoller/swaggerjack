@@ -51,46 +51,46 @@ object RTypeSchemaBuilder:
 
   // decode what scala-reflection stored (a stringified Scala expression) into an actual example value
   private def decodeExample(raw: String, fieldRt: RType[?]): Option[Any] =
-    // strip any "example = " prefix if your metadata includes that
     val s0 = raw.trim.stripPrefix("example = ").trim
 
     // ApiExample.None
-    if s0.endsWith("ApiExample.None") || s0.endsWith("ApiExample.None$") then return None
+    if s0.endsWith("ApiExample.None") || s0.endsWith("ApiExample.None$") then None
+    else
+      val SimplePrefix = "co.blocke.swaggerjack.ApiExample.Simple.apply(\""
 
-    // ApiExample.Simple.apply("...")
-    val SimplePrefix = "co.blocke.swaggerjack.ApiExample.Simple.apply(\""
-    if s0.startsWith(SimplePrefix) && s0.endsWith("\")") then {
-      val inner = s0.substring(SimplePrefix.length, s0.length - 2)
+      if s0.startsWith(SimplePrefix) && s0.endsWith("\")") then
+        val inner = s0.substring(SimplePrefix.length, s0.length - 2)
 
-      // coerce some obvious primitive-like strings into real types for Swagger examples
-      fieldRt match
-        case _: PrimitiveRType if fieldRt.name == BOOLEAN_CLASS || fieldRt.name == JBOOLEAN_CLASS =>
-          inner.toLowerCase match
-            case "true"  => Some(true)
-            case "false" => Some(false)
-            case _       => Some(inner)
+        fieldRt match
+          case _: PrimitiveRType if fieldRt.name == BOOLEAN_CLASS || fieldRt.name == JBOOLEAN_CLASS =>
+            inner.toLowerCase match
+              case "true"  => Some(true)
+              case "false" => Some(false)
+              case _       => Some(inner)
 
-        case _: UUIDRType =>
-          Some(inner) // swagger expects uuid example as string
+          case _: UUIDRType =>
+            Some(inner) // Swagger wants UUID examples as strings
 
-        case _: InstantRType | _: LocalDateRType | _: LocalDateTimeRType | _: OffsetDateTimeRType | _: ZonedDateTimeRType =>
-          Some(inner) // date/time examples are strings
+          case _: InstantRType | _: LocalDateRType | _: LocalDateTimeRType | _: OffsetDateTimeRType | _: ZonedDateTimeRType =>
+            Some(inner) // date/time examples are strings
 
-        case _ =>
-          // numbers: try coercion if the field is numeric
-          fieldRt.name match
-            case INT_CLASS | JINTEGER_CLASS | LONG_CLASS | JLONG_CLASS | SHORT_CLASS | JSHORT_CLASS | BYTE_CLASS | JBYTE_CLASS =>
-              inner.toLongOption.orElse(inner.toIntOption).map(_.asInstanceOf[Any]).orElse(Some(inner))
-            case DOUBLE_CLASS | JDOUBLE_CLASS | FLOAT_CLASS | JFLOAT_CLASS | BIG_DECIMAL_CLASS | JBIG_DECIMAL_CLASS =>
-              inner.toDoubleOption.map(_.asInstanceOf[Any]).orElse(Some(inner))
-            case _ =>
-              Some(inner)
-    }
+          case _ =>
+            fieldRt.name match
+              case INT_CLASS | JINTEGER_CLASS | LONG_CLASS | JLONG_CLASS | SHORT_CLASS | JSHORT_CLASS | BYTE_CLASS | JBYTE_CLASS =>
+                inner.toLongOption
+                  .orElse(inner.toIntOption)
+                  .map(_.asInstanceOf[Any])
+                  .orElse(Some(inner))
 
-    // ApiExample.Value.apply[...]...  -> we *cannot* recover the object instance from a string.
-    // IMPORTANT: return None so we fall back to ExampleBuilder.exampleOf(fieldRt)
-    if s0.contains("co.blocke.swaggerjack.ApiExample.Value.apply") then None
-    else None
+              case DOUBLE_CLASS | JDOUBLE_CLASS | FLOAT_CLASS | JFLOAT_CLASS | BIG_DECIMAL_CLASS | JBIG_DECIMAL_CLASS =>
+                inner.toDoubleOption
+                  .map(_.asInstanceOf[Any])
+                  .orElse(Some(inner))
+
+              case _ =>
+                Some(inner)
+      else if s0.contains("co.blocke.swaggerjack.ApiExample.Value.apply") then None // cannot deserialize structured examples from strings
+      else None
 
   // ----------------------------
   // public entry
